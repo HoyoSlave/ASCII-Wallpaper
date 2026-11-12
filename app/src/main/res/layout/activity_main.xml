@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <!-- ASCII Preview Container (plays rendered 16 FPS GIF / image directly) -->
+    <ImageView
+        android:id="@+id/ivPreview"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:scaleType="fitCenter"
+        android:background="#000000"
+        android:contentDescription="@string/app_name" />
+
+    <!-- Status Text: displays (completed/total) frame progress -->
+    <TextView
+        android:id="@+id/tvStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingTop="8dp"
+        android:paddingBottom="4dp"
+        android:text="@string/status_idle" />
+
+    <!-- 1 Slider: Media opacity (0% - 100%, step 5% -> max=20) -->
+    <TextView
+        android:id="@+id/tvOpacityLabel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingTop="4dp"
+        android:text="Media opacity: 50%" />
+
+    <SeekBar
+        android:id="@+id/sbMediaOpacity"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:max="20"
+        android:progress="10"
+        android:paddingTop="4dp"
+        android:paddingBottom="12dp" />
+
+    <!-- Only 2 Buttons: "Import media" and "Save to gallery" -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btnImportMedia"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/import_media" />
+
+        <Button
+            android:id="@+id/btnSaveToGallery"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:enabled="false"
+            android:text="@string/save_to_gallery" />
+
+    </LinearLayout>
+
+</LinearLayout>
