@@ -9,9 +9,11 @@ import android.graphics.Typeface;
 /**
  * Stable, memory-safe ASCII renderer:
  * - Discrete character densities: 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256
+ * - Output resolution width is strictly (density * 10) pixels (10px per character column),
+ *   with height proportional to the source aspect ratio
  * - Renders using the device's built-in system monospace font (Typeface.MONOSPACE)
  * - Uses identical per-cell coordinate placement (c * cellW, r * cellH + baselineOffset) for both
- *   Colored and Monochrome modes so character positions and dimensions are 100% identical across all densities
+ *   Colored and Monochrome modes
  */
 public final class AsciiRenderer {
 
@@ -19,7 +21,7 @@ public final class AsciiRenderer {
             2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256
     };
     public static final int DEFAULT_DENSITY_INDEX = 10; // 64
-    public static final int BASE_IMAGE_SIZE = 1024;
+    public static final int PIXELS_PER_DENSITY_UNIT = 10; // Output resolution = density * 10
 
     private static final char[] ASCII_RAMP =
             " .'`^\",:;Il!i><~+_-?][}{1)(|/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$".toCharArray();
@@ -88,7 +90,7 @@ public final class AsciiRenderer {
     }
 
     /**
-     * Renders a source Bitmap into both an ASCII Bitmap (using built-in Typeface.MONOSPACE)
+     * Renders a source Bitmap into both an ASCII Bitmap (resolution = density * 10)
      * and an ASCII plain-text string for the given density (2..256) and color setting.
      */
     public FrameRenderResult renderFrame(Bitmap source, int densityCols, boolean colored) {
@@ -145,15 +147,9 @@ public final class AsciiRenderer {
 
         final String asciiText = new String(textBuf);
 
-        // Compute output Bitmap dimensions preserving source aspect ratio
-        final int outWidth;
-        if (srcH >= srcW) {
-            outWidth = BASE_IMAGE_SIZE;
-        } else {
-            outWidth = Math.min(2048, Math.max(BASE_IMAGE_SIZE, Math.round((float) BASE_IMAGE_SIZE * srcW / srcH)));
-        }
-
-        final float cellW = (float) outWidth / (float) cols;
+        // Output resolution is strictly (density * 10) for the column axis
+        final int outWidth = cols * PIXELS_PER_DENSITY_UNIT;
+        final float cellW = (float) PIXELS_PER_DENSITY_UNIT; // 10.0f px per character column
         final float textSize = (cellW * 100f) / unitAdvanceAt100;
         final float cellH = (textSize * unitLineHeightAt100) / 100f;
         final float baselineOffset = (textSize * unitAscentAt100) / 100f;
@@ -170,7 +166,6 @@ public final class AsciiRenderer {
         textPaint.setColor(Color.WHITE);
 
         // Draw every character at exact cell coordinate (c * cellW, y) in both Colored and Monochrome modes
-        // so that glyph positioning and total width/height are 100% identical across all densities (including 96)
         char[] singleChar = new char[1];
         for (int r = 0; r < rows; r++) {
             float y = r * cellH + baselineOffset;

@@ -24,13 +24,16 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
  * Stable MediaProcessor saving ALL outputs (both PNG/GIF media and TXT/ZIP text files)
- * into the unified Downloads/ASCIIWallpaper folder.
+ * into the unified Download/ASCIIWallpaper folder with numeric-only timestamp filenames (yyyyMMddHHmmss).
  */
 @SuppressWarnings("deprecation")
 public final class MediaProcessor {
@@ -370,30 +373,37 @@ public final class MediaProcessor {
     }
 
     /**
-     * Saves the rendered visual file (.png or 16 FPS .gif) into Downloads/ASCIIWallpaper
-     * (unified folder with TXT/ZIP) and triggers MediaScanner so Gallery also indexes it.
+     * Generates a filename stem containing ONLY digits: year month day hour minute second (yyyyMMddHHmmss).
+     * Zero symbols and zero alphabet characters in the filename stem.
+     */
+    private static String generateNumericTimestampName() {
+        SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMddHHmmss", Locale.US);
+        return sdf.format(new Date());
+    }
+
+    /**
+     * Saves the rendered visual file (.png or 16 FPS .gif) into Download/ASCIIWallpaper
+     * named strictly as <yyyyMMddHHmmss>.png or <yyyyMMddHHmmss>.gif.
      */
     public String saveToGallery(RenderedOutput output) throws IOException {
         if (output == null || output.galleryFile == null || !output.galleryFile.exists()) {
             throw new IOException("No rendered visual output available");
         }
         String ext = output.isAnimated ? ".gif" : ".png";
-        String prefix = output.isAnimated ? "ASCII_Wallpaper_16FPS_" : "ASCII_Wallpaper_";
-        String displayName = prefix + System.currentTimeMillis() + ext;
+        String displayName = generateNumericTimestampName() + ext;
         return saveFileToDownloads(output.galleryFile, displayName, output.galleryMime);
     }
 
     /**
      * Saves the rendered text output (.txt for image, or .zip containing 1.txt, 2.txt... for video)
-     * into the exact same Downloads/ASCIIWallpaper folder.
+     * into Download/ASCIIWallpaper named strictly as <yyyyMMddHHmmss>.txt or <yyyyMMddHHmmss>.zip.
      */
     public String saveTextOrZip(RenderedOutput output) throws IOException {
         if (output == null || output.textOrZipFile == null || !output.textOrZipFile.exists()) {
             throw new IOException("No rendered text/ZIP output available");
         }
         String ext = output.isAnimated ? ".zip" : ".txt";
-        String prefix = output.isAnimated ? "ASCII_Frames_" : "ASCII_Text_";
-        String displayName = prefix + System.currentTimeMillis() + ext;
+        String displayName = generateNumericTimestampName() + ext;
         return saveFileToDownloads(output.textOrZipFile, displayName, output.textOrZipMime);
     }
 
@@ -474,7 +484,7 @@ public final class MediaProcessor {
     }
 
     /**
-     * Unified saver: saves all files (.png, .gif, .txt, .zip) into Downloads/ASCIIWallpaper.
+     * Unified saver: saves all files (.png, .gif, .txt, .zip) into Download/ASCIIWallpaper.
      */
     private String saveFileToDownloads(File srcFile, String displayName, String mimeType) throws IOException {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
