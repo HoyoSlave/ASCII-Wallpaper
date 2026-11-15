@@ -7,12 +7,11 @@ import android.graphics.Paint;
 import android.graphics.Typeface;
 
 /**
- * Stable, memory-safe ASCII renderer built from scratch:
+ * Stable, memory-safe ASCII renderer:
  * - Discrete character densities: 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256
  * - Renders using the device's built-in system monospace font (Typeface.MONOSPACE)
- * - Supports colored or monochrome (white on black) ASCII text
- * - Generates both rendered Bitmap frames (for preview & gallery save) and plain ASCII text
- *   (for 1.txt, 2.txt, ... video ZIP export)
+ * - Uses identical per-cell coordinate placement (c * cellW, r * cellH + baselineOffset) for both
+ *   Colored and Monochrome modes so character positions and dimensions are 100% identical across all densities
  */
 public final class AsciiRenderer {
 
@@ -168,28 +167,22 @@ public final class AsciiRenderer {
         textPaint.setTypeface(Typeface.MONOSPACE);
         textPaint.setTextSize(textSize);
         textPaint.setTextAlign(Paint.Align.LEFT);
+        textPaint.setColor(Color.WHITE);
 
-        if (!colored) {
-            // Fast monochrome drawing path: draw entire row or character by character in solid WHITE
-            textPaint.setColor(Color.WHITE);
-            for (int r = 0; r < rows; r++) {
-                float y = r * cellH + baselineOffset;
-                int rowOffset = r * cols;
-                canvas.drawText(cellChars, rowOffset, cols, 0f, y, textPaint);
-            }
-        } else {
-            // Colored drawing path using built-in monospace font
-            char[] singleChar = new char[1];
-            for (int r = 0; r < rows; r++) {
-                float y = r * cellH + baselineOffset;
-                int rowOffset = r * cols;
-                for (int c = 0; c < cols; c++) {
-                    char ch = cellChars[rowOffset + c];
-                    if (ch == ' ') continue;
-                    singleChar[0] = ch;
+        // Draw every character at exact cell coordinate (c * cellW, y) in both Colored and Monochrome modes
+        // so that glyph positioning and total width/height are 100% identical across all densities (including 96)
+        char[] singleChar = new char[1];
+        for (int r = 0; r < rows; r++) {
+            float y = r * cellH + baselineOffset;
+            int rowOffset = r * cols;
+            for (int c = 0; c < cols; c++) {
+                char ch = cellChars[rowOffset + c];
+                if (ch == ' ') continue;
+                singleChar[0] = ch;
+                if (colored) {
                     textPaint.setColor(cellColors[rowOffset + c]);
-                    canvas.drawText(singleChar, 0, 1, c * cellW, y, textPaint);
                 }
+                canvas.drawText(singleChar, 0, 1, c * cellW, y, textPaint);
             }
         }
 

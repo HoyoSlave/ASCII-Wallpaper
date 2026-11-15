@@ -29,12 +29,8 @@ import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * MainActivity supporting both Gallery saving (.png / 16 FPS .gif) AND TXT/ZIP saving
- * (.txt for static image, .zip with 1.txt, 2.txt, ... for video/GIF):
- * - Density slider restricted strictly to: 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256
- * - Colored text toggle (Colored vs Monochrome white text)
- * - Built-in device monospace font (Typeface.MONOSPACE)
- * - Buttons: "Import media", "Save to gallery", and "Save TXT" / "Save ZIP"
+ * MainActivity supporting unified saving to Download/ASCIIWallpaper for both
+ * visual files (.png / 16 FPS .gif) and text files (.txt / .zip of 1.txt, 2.txt, ...).
  */
 @SuppressWarnings("deprecation")
 public class MainActivity extends Activity {
@@ -257,20 +253,20 @@ public class MainActivity extends Activity {
 
         btnSaveToGallery.setEnabled(false);
         final int total = output.totalFrames;
-        tvStatus.setText("Saving to gallery (" + total + "/" + total + ")...");
+        tvStatus.setText("Saving (" + total + "/" + total + ")...");
 
         backgroundExecutor.submit(() -> {
             try {
-                final Uri savedUri = mediaProcessor.saveToGallery(output);
+                final String savedPath = mediaProcessor.saveToGallery(output);
                 mainHandler.post(() -> {
                     btnSaveToGallery.setEnabled(true);
-                    tvStatus.setText("Saved to gallery (" + total + "/" + total + "): " + savedUri.toString());
-                    Toast.makeText(MainActivity.this, "Saved to gallery!", Toast.LENGTH_SHORT).show();
+                    tvStatus.setText("Saved (" + total + "/" + total + "): " + savedPath);
+                    Toast.makeText(MainActivity.this, "Saved: " + savedPath, Toast.LENGTH_SHORT).show();
                 });
             } catch (final Exception e) {
                 mainHandler.post(() -> {
                     btnSaveToGallery.setEnabled(true);
-                    tvStatus.setText("Gallery save failed: " + e.getMessage());
+                    tvStatus.setText("Save failed: " + e.getMessage());
                     Toast.makeText(MainActivity.this, "Failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
                 });
             }

@@ -9,6 +9,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Movie;
 import android.media.MediaMetadataRetriever;
+import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
@@ -28,13 +29,8 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * Stable MediaProcessor supporting BOTH Gallery output AND TXT/ZIP output:
- * - Static Image:
- *   1. Gallery output: PNG image saved to Pictures/ASCIIWallpaper
- *   2. TXT output: .txt file saved to Downloads/ASCIIWallpaper
- * - Video / Animated GIF:
- *   1. Gallery output: 16 FPS animated GIF saved to Pictures/ASCIIWallpaper
- *   2. TXT output: .zip archive containing 1.txt, 2.txt, 3.txt, ... per frame saved to Downloads/ASCIIWallpaper
+ * Stable MediaProcessor saving ALL outputs (both PNG/GIF media and TXT/ZIP text files)
+ * into the unified Downloads/ASCIIWallpaper folder.
  */
 @SuppressWarnings("deprecation")
 public final class MediaProcessor {
@@ -42,6 +38,7 @@ public final class MediaProcessor {
     public static final int TARGET_FPS = 16;
     public static final int MAX_DURATION_SECONDS = 64;
     private static final int MAX_DECODE_SIDE = 1024;
+    public static final String DOWNLOAD_SUBFOLDER = "ASCIIWallpaper";
 
     public enum MediaType {
         STATIC_IMAGE,
@@ -192,7 +189,7 @@ public final class MediaProcessor {
     }
 
     /**
-     * Renders both the Gallery file (.png or 16 FPS .gif) AND the TXT/ZIP file (.txt or .zip of 1.txt..N.txt)
+     * Renders both the visual file (.png or 16 FPS .gif) and the TXT/ZIP file (.txt or .zip of 1.txt..N.txt)
      * in a single background pass.
      */
     public RenderedOutput renderOutput(
@@ -237,10 +234,6 @@ public final class MediaProcessor {
             );
         }
 
-        // Video or Animated GIF:
-        // Simultaneously builds:
-        // 1) 16 FPS animated GIF (for live preview & "Save to gallery")
-        // 2) ZIP archive containing 1.txt, 2.txt, 3.txt, ... per frame (for "Save ZIP" / "Save TXT")
         final long durationMs = Math.min(source.durationMs, MAX_DURATION_SECONDS * 1000L);
         final int totalFrames = Math.max(1, Math.min(
                 MAX_DURATION_SECONDS * TARGET_FPS,
@@ -377,21 +370,22 @@ public final class MediaProcessor {
     }
 
     /**
-     * Saves the rendered visual file (.png or 16 FPS .gif) to the Android Gallery (Pictures/ASCIIWallpaper).
+     * Saves the rendered visual file (.png or 16 FPS .gif) into Downloads/ASCIIWallpaper
+     * (unified folder with TXT/ZIP) and triggers MediaScanner so Gallery also indexes it.
      */
-    public Uri saveToGallery(RenderedOutput output) throws IOException {
+    public String saveToGallery(RenderedOutput output) throws IOException {
         if (output == null || output.galleryFile == null || !output.galleryFile.exists()) {
-            throw new IOException("No rendered gallery output available");
+            throw new IOException("No rendered visual output available");
         }
         String ext = output.isAnimated ? ".gif" : ".png";
         String prefix = output.isAnimated ? "ASCII_Wallpaper_16FPS_" : "ASCII_Wallpaper_";
         String displayName = prefix + System.currentTimeMillis() + ext;
-        return saveMediaFileToGallery(output.galleryFile, displayName, output.galleryMime);
+        return saveFileToDownloads(output.galleryFile, displayName, output.galleryMime);
     }
 
     /**
      * Saves the rendered text output (.txt for image, or .zip containing 1.txt, 2.txt... for video)
-     * to Downloads/ASCIIWallpaper.
+     * into the exact same Downloads/ASCIIWallpaper folder.
      */
     public String saveTextOrZip(RenderedOutput output) throws IOException {
         if (output == null || output.textOrZipFile == null || !output.textOrZipFile.exists()) {
@@ -479,52 +473,16 @@ public final class MediaProcessor {
         return sw;
     }
 
-    private Uri saveMediaFileToGallery(File srcFile, String displayName, String mimeType) throws IOException {
-        ContentResolver resolver = context.getContentResolver();
-        ContentValues values = new ContentValues();
-        values.put(MediaStore.Images.Media.DISPLAY_NAME, displayName);
-        values.put(MediaStore.Images.Media.MIME_TYPE, mimeType);
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/ASCIIWallpaper");
-            values.put(MediaStore.Images.Media.IS_PENDING, 1);
-        }
-
-        Uri collection = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
-                ? MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-                : MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
-
-        Uri itemUri = resolver.insert(collection, values);
-        if (itemUri == null) {
-            throw new IOException("Failed to create Gallery entry");
-        }
-
-        try (InputStream in = new FileInputStream(srcFile);
-             OutputStream out = resolver.openOutputStream(itemUri)) {
-            if (out == null) throw new IOException("Failed to open Gallery stream");
-            byte[] buf = new byte[64 * 1024];
-            int len;
-            while ((len = in.read(buf)) != -1) {
-                out.write(buf, 0, len);
-            }
-            out.flush();
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ContentValues update = new ContentValues();
-            update.put(MediaStore.Images.Media.IS_PENDING, 0);
-            resolver.update(itemUri, update, null, null);
-        }
-        return itemUri;
-    }
-
+    /**
+     * Unified saver: saves all files (.png, .gif, .txt, .zip) into Downloads/ASCIIWallpaper.
+     */
     private String saveFileToDownloads(File srcFile, String displayName, String mimeType) throws IOException {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             ContentResolver resolver = context.getContentResolver();
             ContentValues values = new ContentValues();
             values.put(MediaStore.Downloads.DISPLAY_NAME, displayName);
             values.put(MediaStore.Downloads.MIME_TYPE, mimeType);
-            values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/ASCIIWallpaper");
+            values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/" + DOWNLOAD_SUBFOLDER);
             values.put(MediaStore.Downloads.IS_PENDING, 1);
 
             Uri collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
@@ -547,10 +505,10 @@ public final class MediaProcessor {
             ContentValues update = new ContentValues();
             update.put(MediaStore.Downloads.IS_PENDING, 0);
             resolver.update(itemUri, update, null, null);
-            return "Downloads/ASCIIWallpaper/" + displayName;
+            return "Download/" + DOWNLOAD_SUBFOLDER + "/" + displayName;
         } else {
             File downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-            File targetDir = new File(downloadsDir, "ASCIIWallpaper");
+            File targetDir = new File(downloadsDir, DOWNLOAD_SUBFOLDER);
             if (!targetDir.exists()) {
                 targetDir.mkdirs();
             }
@@ -564,7 +522,16 @@ public final class MediaProcessor {
                 }
                 out.flush();
             }
-            return outFile.getAbsolutePath();
+            try {
+                MediaScannerConnection.scanFile(
+                        context,
+                        new String[]{outFile.getAbsolutePath()},
+                        new String[]{mimeType},
+                        null
+                );
+            } catch (Throwable ignored) {
+            }
+            return "Download/" + DOWNLOAD_SUBFOLDER + "/" + displayName;
         }
     }
 
