@@ -3,10 +3,17 @@ package com.asciiwallpaper.app;
 import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.ImageDecoder;
+import android.graphics.Movie;
+import android.graphics.drawable.AnimatedImageDrawable;
+import android.graphics.drawable.Drawable;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.ImageView;
@@ -14,6 +21,7 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.File;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -21,12 +29,12 @@ import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * MainActivity recreated for maximum stability:
+ * MainActivity supporting both Gallery saving (.png / 16 FPS .gif) AND TXT/ZIP saving
+ * (.txt for static image, .zip with 1.txt, 2.txt, ... for video/GIF):
  * - Density slider restricted strictly to: 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256
  * - Colored text toggle (Colored vs Monochrome white text)
  * - Built-in device monospace font (Typeface.MONOSPACE)
- * - 2 Buttons: "Import media" and "Save to gallery"
- *   (Images save as PNG to Gallery; Videos save as ZIP containing 1.txt, 2.txt, ... per frame)
+ * - Buttons: "Import media", "Save to gallery", and "Save TXT" / "Save ZIP"
  */
 @SuppressWarnings("deprecation")
 public class MainActivity extends Activity {
@@ -41,12 +49,12 @@ public class MainActivity extends Activity {
     private SeekBar sbDensity;
     private Button btnImportMedia;
     private Button btnSaveToGallery;
+    private Button btnSaveTxt;
 
     private AsciiRenderer asciiRenderer;
     private MediaProcessor mediaProcessor;
 
-    private final ExecutorService renderExecutor = Executors.newSingleThreadExecutor();
-    private final ExecutorService playbackExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
     private Future<?> activeRenderTask;
     private AtomicBoolean activeCancelFlag;
 
@@ -56,38 +64,32 @@ public class MainActivity extends Activity {
     private MediaProcessor.RenderedOutput currentRenderedOutput;
     private Bitmap displayedBitmap;
 
+    // Fallback 16 FPS Movie player for API < 28
+    private Movie legacyGifMovie;
+    private Bitmap legacyMovieBuffer;
+    private Canvas legacyMovieCanvas;
+    private long legacyMovieStartMs;
+
     private int currentDensity = AsciiRenderer.DENSITY_VALUES[AsciiRenderer.DEFAULT_DENSITY_INDEX]; // 64
     private boolean isColored = true;
 
-    private boolean isPlayingPreview = false;
-    private int currentPlaybackFrame = 1;
-
-    private final Runnable playbackTickRunnable = new Runnable() {
+    private final Runnable legacyGifPlaybackRunnable = new Runnable() {
         @Override
         public void run() {
-            if (!isPlayingPreview || currentRenderedOutput == null || !currentRenderedOutput.isAnimated) {
-                return;
-            }
-            final MediaProcessor.RenderedOutput output = currentRenderedOutput;
-            final int frameToLoad = currentPlaybackFrame;
-            currentPlaybackFrame = (currentPlaybackFrame % Math.max(1, output.totalFrames)) + 1;
-
-            playbackExecutor.submit(() -> {
-                if (!isPlayingPreview) return;
-                final Bitmap bmp = mediaProcessor.loadPreviewFrame(output, frameToLoad);
-                if (bmp != null) {
-                    mainHandler.post(() -> {
-                        if (!isPlayingPreview) {
-                            bmp.recycle();
-                            return;
-                        }
-                        updateDisplayedBitmap(bmp);
-                        mainHandler.postDelayed(playbackTickRunnable, FRAME_INTERVAL_16FPS_MS);
-                    });
-                } else {
-                    mainHandler.postDelayed(playbackTickRunnable, FRAME_INTERVAL_16FPS_MS);
+            if (legacyGifMovie != null && legacyMovieBuffer != null && !legacyMovieBuffer.isRecycled()) {
+                long now = SystemClock.uptimeMillis();
+                if (legacyMovieStartMs == 0L) {
+                    legacyMovieStartMs = now;
                 }
-            });
+                int dur = legacyGifMovie.duration();
+                if (dur <= 0) dur = 1000;
+                int relTime = (int) ((now - legacyMovieStartMs) % dur);
+                legacyGifMovie.setTime(relTime);
+                legacyGifMovie.draw(legacyMovieCanvas, 0f, 0f);
+                ivPreview.setImageBitmap(legacyMovieBuffer);
+                ivPreview.invalidate();
+                mainHandler.postDelayed(this, FRAME_INTERVAL_16FPS_MS);
+            }
         }
     };
 
@@ -106,6 +108,7 @@ public class MainActivity extends Activity {
         sbDensity = findViewById(R.id.sbDensity);
         btnImportMedia = findViewById(R.id.btnImportMedia);
         btnSaveToGallery = findViewById(R.id.btnSaveToGallery);
+        btnSaveTxt = findViewById(R.id.btnSaveTxt);
 
         sbDensity.setMax(AsciiRenderer.DENSITY_VALUES.length - 1);
         sbDensity.setProgress(AsciiRenderer.DEFAULT_DENSITY_INDEX);
@@ -142,7 +145,8 @@ public class MainActivity extends Activity {
         });
 
         btnImportMedia.setOnClickListener(v -> openMediaPicker());
-        btnSaveToGallery.setOnClickListener(v -> saveCurrentOutput());
+        btnSaveToGallery.setOnClickListener(v -> saveGalleryOutput());
+        btnSaveTxt.setOnClickListener(v -> saveTxtOrZipOutput());
     }
 
     private void updateDensityLabel(int densityValue) {
@@ -172,13 +176,15 @@ public class MainActivity extends Activity {
         cancelActiveRender();
         stopPreviewPlayback();
         btnSaveToGallery.setEnabled(false);
+        btnSaveTxt.setEnabled(false);
         tvStatus.setText("Loading (0/...)");
 
-        renderExecutor.submit(() -> {
+        backgroundExecutor.submit(() -> {
             try {
                 final MediaProcessor.MediaSourceInfo info = mediaProcessor.loadMediaSource(uri);
                 mainHandler.post(() -> {
                     currentMediaSource = info;
+                    btnSaveTxt.setText(info.isAnimated() ? R.string.save_zip : R.string.save_txt);
                     triggerRender();
                 });
             } catch (final Exception e) {
@@ -195,6 +201,7 @@ public class MainActivity extends Activity {
         cancelActiveRender();
         stopPreviewPlayback();
         btnSaveToGallery.setEnabled(false);
+        btnSaveTxt.setEnabled(false);
         currentRenderedOutput = null;
 
         final MediaProcessor.MediaSourceInfo source = currentMediaSource;
@@ -203,7 +210,7 @@ public class MainActivity extends Activity {
         final AtomicBoolean cancelFlag = new AtomicBoolean(false);
         activeCancelFlag = cancelFlag;
 
-        activeRenderTask = renderExecutor.submit(() -> {
+        activeRenderTask = backgroundExecutor.submit(() -> {
             try {
                 final MediaProcessor.RenderedOutput output = mediaProcessor.renderOutput(
                         source,
@@ -228,7 +235,9 @@ public class MainActivity extends Activity {
                     if (cancelFlag.get()) return;
                     currentRenderedOutput = output;
                     btnSaveToGallery.setEnabled(true);
-                    startPreviewDisplay(output);
+                    btnSaveTxt.setEnabled(true);
+                    btnSaveTxt.setText(output.isAnimated ? R.string.save_zip : R.string.save_txt);
+                    displayRenderedOutputInPreview(output);
                 });
             } catch (InterruptedException ignored) {
             } catch (final Exception e) {
@@ -239,40 +248,65 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void saveCurrentOutput() {
+    private void saveGalleryOutput() {
         final MediaProcessor.RenderedOutput output = currentRenderedOutput;
-        if (output == null || output.outputFile == null || !output.outputFile.exists()) {
+        if (output == null || output.galleryFile == null || !output.galleryFile.exists()) {
             Toast.makeText(this, "Please wait for rendering to complete.", Toast.LENGTH_SHORT).show();
             return;
         }
 
         btnSaveToGallery.setEnabled(false);
         final int total = output.totalFrames;
-        tvStatus.setText("Saving (" + total + "/" + total + ")...");
+        tvStatus.setText("Saving to gallery (" + total + "/" + total + ")...");
 
-        renderExecutor.submit(() -> {
+        backgroundExecutor.submit(() -> {
             try {
-                final String savedLocation = mediaProcessor.saveRenderedOutput(output);
+                final Uri savedUri = mediaProcessor.saveToGallery(output);
                 mainHandler.post(() -> {
                     btnSaveToGallery.setEnabled(true);
-                    tvStatus.setText("Saved (" + total + "/" + total + "): " + savedLocation);
-                    Toast.makeText(
-                            MainActivity.this,
-                            output.isAnimated ? "Saved ZIP to " + savedLocation : "Saved to gallery!",
-                            Toast.LENGTH_SHORT
-                    ).show();
+                    tvStatus.setText("Saved to gallery (" + total + "/" + total + "): " + savedUri.toString());
+                    Toast.makeText(MainActivity.this, "Saved to gallery!", Toast.LENGTH_SHORT).show();
                 });
             } catch (final Exception e) {
                 mainHandler.post(() -> {
                     btnSaveToGallery.setEnabled(true);
-                    tvStatus.setText("Save failed: " + e.getMessage());
-                    Toast.makeText(MainActivity.this, "Failed to save: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                    tvStatus.setText("Gallery save failed: " + e.getMessage());
+                    Toast.makeText(MainActivity.this, "Failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
                 });
             }
         });
     }
 
-    private void startPreviewDisplay(MediaProcessor.RenderedOutput output) {
+    private void saveTxtOrZipOutput() {
+        final MediaProcessor.RenderedOutput output = currentRenderedOutput;
+        if (output == null || output.textOrZipFile == null || !output.textOrZipFile.exists()) {
+            Toast.makeText(this, "Please wait for rendering to complete.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        btnSaveTxt.setEnabled(false);
+        final int total = output.totalFrames;
+        tvStatus.setText("Saving " + (output.isAnimated ? "ZIP" : "TXT") + " (" + total + "/" + total + ")...");
+
+        backgroundExecutor.submit(() -> {
+            try {
+                final String savedPath = mediaProcessor.saveTextOrZip(output);
+                mainHandler.post(() -> {
+                    btnSaveTxt.setEnabled(true);
+                    tvStatus.setText("Saved (" + total + "/" + total + "): " + savedPath);
+                    Toast.makeText(MainActivity.this, "Saved: " + savedPath, Toast.LENGTH_SHORT).show();
+                });
+            } catch (final Exception e) {
+                mainHandler.post(() -> {
+                    btnSaveTxt.setEnabled(true);
+                    tvStatus.setText("Save failed: " + e.getMessage());
+                    Toast.makeText(MainActivity.this, "Failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                });
+            }
+        });
+    }
+
+    private void displayRenderedOutputInPreview(MediaProcessor.RenderedOutput output) {
         stopPreviewPlayback();
         if (!output.isAnimated) {
             if (output.staticBitmap != null && !output.staticBitmap.isRecycled()) {
@@ -280,14 +314,46 @@ public class MainActivity extends Activity {
             }
             return;
         }
-        isPlayingPreview = true;
-        currentPlaybackFrame = 1;
-        mainHandler.post(playbackTickRunnable);
+
+        File gifFile = output.galleryFile;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            try {
+                ImageDecoder.Source source = ImageDecoder.createSource(gifFile);
+                Drawable drawable = ImageDecoder.decodeDrawable(source);
+                ivPreview.setImageDrawable(drawable);
+                if (drawable instanceof AnimatedImageDrawable) {
+                    ((AnimatedImageDrawable) drawable).start();
+                }
+                return;
+            } catch (Exception ignored) {
+            }
+        }
+
+        legacyGifMovie = Movie.decodeFile(gifFile.getAbsolutePath());
+        if (legacyGifMovie != null && legacyGifMovie.width() > 0 && legacyGifMovie.height() > 0) {
+            legacyMovieBuffer = Bitmap.createBitmap(
+                    legacyGifMovie.width(),
+                    legacyGifMovie.height(),
+                    Bitmap.Config.ARGB_8888
+            );
+            legacyMovieCanvas = new Canvas(legacyMovieBuffer);
+            legacyMovieStartMs = 0L;
+            mainHandler.post(legacyGifPlaybackRunnable);
+        }
     }
 
     private void stopPreviewPlayback() {
-        isPlayingPreview = false;
-        mainHandler.removeCallbacks(playbackTickRunnable);
+        mainHandler.removeCallbacks(legacyGifPlaybackRunnable);
+        Drawable d = ivPreview.getDrawable();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && d instanceof AnimatedImageDrawable) {
+            ((AnimatedImageDrawable) d).stop();
+        }
+        legacyGifMovie = null;
+        legacyMovieCanvas = null;
+        if (legacyMovieBuffer != null && !legacyMovieBuffer.isRecycled()) {
+            legacyMovieBuffer.recycle();
+        }
+        legacyMovieBuffer = null;
     }
 
     private void updateDisplayedBitmap(Bitmap newBitmap) {
@@ -315,8 +381,7 @@ public class MainActivity extends Activity {
         super.onDestroy();
         cancelActiveRender();
         stopPreviewPlayback();
-        renderExecutor.shutdownNow();
-        playbackExecutor.shutdownNow();
+        backgroundExecutor.shutdownNow();
         if (displayedBitmap != null && !displayedBitmap.isRecycled()) {
             displayedBitmap.recycle();
             displayedBitmap = null;

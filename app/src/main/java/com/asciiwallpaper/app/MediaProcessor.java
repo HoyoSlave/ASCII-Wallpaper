@@ -28,11 +28,13 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * Stable MediaProcessor rebuilt from scratch:
- * - Static Image: renders ASCII Bitmap and saves as PNG to Gallery (Pictures/ASCIIWallpaper)
- * - Video / Animated GIF: renders frames at 16 FPS, streams 1.txt, 2.txt, 3.txt, ... into a .zip archive,
- *   caches lightweight preview frames on disk for zero-OOM 16 FPS preview playback,
- *   and saves the .zip archive when "Save to gallery" is tapped.
+ * Stable MediaProcessor supporting BOTH Gallery output AND TXT/ZIP output:
+ * - Static Image:
+ *   1. Gallery output: PNG image saved to Pictures/ASCIIWallpaper
+ *   2. TXT output: .txt file saved to Downloads/ASCIIWallpaper
+ * - Video / Animated GIF:
+ *   1. Gallery output: 16 FPS animated GIF saved to Pictures/ASCIIWallpaper
+ *   2. TXT output: .zip archive containing 1.txt, 2.txt, 3.txt, ... per frame saved to Downloads/ASCIIWallpaper
  */
 @SuppressWarnings("deprecation")
 public final class MediaProcessor {
@@ -84,29 +86,29 @@ public final class MediaProcessor {
     }
 
     public static final class RenderedOutput {
-        public final File outputFile;
-        public final String mimeType;
+        public final File galleryFile;     // .png (image) or .gif (video/animated)
+        public final String galleryMime;   // image/png or image/gif
+        public final File textOrZipFile;   // .txt (image) or .zip containing 1.txt, 2.txt... (video/animated)
+        public final String textOrZipMime; // text/plain or application/zip
         public final boolean isAnimated;
         public final Bitmap staticBitmap;
-        public final String lastAsciiText;
-        public final File previewFramesDir;
         public final int totalFrames;
 
         public RenderedOutput(
-                File outputFile,
-                String mimeType,
+                File galleryFile,
+                String galleryMime,
+                File textOrZipFile,
+                String textOrZipMime,
                 boolean isAnimated,
                 Bitmap staticBitmap,
-                String lastAsciiText,
-                File previewFramesDir,
                 int totalFrames
         ) {
-            this.outputFile = outputFile;
-            this.mimeType = mimeType;
+            this.galleryFile = galleryFile;
+            this.galleryMime = galleryMime;
+            this.textOrZipFile = textOrZipFile;
+            this.textOrZipMime = textOrZipMime;
             this.isAnimated = isAnimated;
             this.staticBitmap = staticBitmap;
-            this.lastAsciiText = lastAsciiText;
-            this.previewFramesDir = previewFramesDir;
             this.totalFrames = totalFrames;
         }
     }
@@ -190,9 +192,8 @@ public final class MediaProcessor {
     }
 
     /**
-     * Renders the loaded media with the chosen density (2..256) and colored/monochrome flag.
-     * - Static image -> PNG file + Bitmap
-     * - Video / GIF -> ZIP archive containing 1.txt, 2.txt, 3.txt, ... per frame + preview frames
+     * Renders both the Gallery file (.png or 16 FPS .gif) AND the TXT/ZIP file (.txt or .zip of 1.txt..N.txt)
+     * in a single background pass.
      */
     public RenderedOutput renderOutput(
             MediaSourceInfo source,
@@ -215,21 +216,31 @@ public final class MediaProcessor {
             try (FileOutputStream fos = new FileOutputStream(outputPng)) {
                 res.bitmap.compress(Bitmap.CompressFormat.PNG, 100, fos);
             }
+
+            File outputTxt = new File(context.getCacheDir(), "ascii_rendered_text.txt");
+            try (FileOutputStream fos = new FileOutputStream(outputTxt)) {
+                fos.write(res.asciiText.getBytes(StandardCharsets.UTF_8));
+                fos.flush();
+            }
+
             if (listener != null) {
                 listener.onProgress(1, 1, "Ready (1/1)", res.bitmap);
             }
             return new RenderedOutput(
                     outputPng,
                     "image/png",
+                    outputTxt,
+                    "text/plain",
                     false,
                     res.bitmap,
-                    res.asciiText,
-                    null,
                     1
             );
         }
 
-        // Video or Animated GIF -> Package 1.txt, 2.txt, ... into a .zip archive
+        // Video or Animated GIF:
+        // Simultaneously builds:
+        // 1) 16 FPS animated GIF (for live preview & "Save to gallery")
+        // 2) ZIP archive containing 1.txt, 2.txt, 3.txt, ... per frame (for "Save ZIP" / "Save TXT")
         final long durationMs = Math.min(source.durationMs, MAX_DURATION_SECONDS * 1000L);
         final int totalFrames = Math.max(1, Math.min(
                 MAX_DURATION_SECONDS * TARGET_FPS,
@@ -240,18 +251,18 @@ public final class MediaProcessor {
             listener.onProgress(0, totalFrames, "Loading (0/" + totalFrames + ")", null);
         }
 
-        File previewDir = new File(context.getCacheDir(), "ascii_preview_frames");
-        clearDirectory(previewDir);
-
+        File tempGif = new File(context.getCacheDir(), "ascii_rendering_in_progress.gif");
+        File finalGif = new File(context.getCacheDir(), "ascii_rendered_16fps.gif");
         File tempZip = new File(context.getCacheDir(), "ascii_frames_in_progress.zip");
         File finalZip = new File(context.getCacheDir(), "ascii_frames_output.zip");
+        if (tempGif.exists()) tempGif.delete();
         if (tempZip.exists()) tempZip.delete();
 
-        String firstAsciiText = "";
         MediaMetadataRetriever videoRetriever = null;
         Movie gifMovie = null;
         Bitmap gifCanvasBitmap = null;
         Canvas gifCanvas = null;
+        FastGifEncoder gifEncoder = null;
 
         try {
             if (source.mediaType == MediaType.VIDEO) {
@@ -297,45 +308,57 @@ public final class MediaProcessor {
                         rawFrame.recycle();
                     }
 
-                    if (frameNum == 1) {
-                        firstAsciiText = res.asciiText;
+                    if (gifEncoder == null) {
+                        gifEncoder = new FastGifEncoder(
+                                tempGif,
+                                res.bitmap.getWidth(),
+                                res.bitmap.getHeight(),
+                                TARGET_FPS
+                        );
                     }
+                    gifEncoder.addFrame(res.bitmap);
 
-                    // Write <frameNum>.txt (1.txt, 2.txt, 3.txt, ...) into the ZIP
+                    // Write <frameNum>.txt (1.txt, 2.txt, 3.txt, ...) into the ZIP archive
                     ZipEntry entry = new ZipEntry(frameNum + ".txt");
                     zos.putNextEntry(entry);
                     zos.write(res.asciiText.getBytes(StandardCharsets.UTF_8));
                     zos.closeEntry();
 
-                    // Save compact preview frame to disk so playback uses minimal RAM
-                    File previewFile = new File(previewDir, "frame_" + frameNum + ".jpg");
-                    try (FileOutputStream pfos = new FileOutputStream(previewFile)) {
-                        res.bitmap.compress(Bitmap.CompressFormat.JPEG, 82, pfos);
-                    }
-
                     if (listener != null) {
-                        Bitmap livePreviewCopy = res.bitmap.copy(Bitmap.Config.ARGB_8888, false);
+                        Bitmap previewCopy = res.bitmap.copy(Bitmap.Config.ARGB_8888, false);
                         listener.onProgress(
                                 frameNum,
                                 totalFrames,
                                 "Loading (" + frameNum + "/" + totalFrames + ")",
-                                livePreviewCopy
+                                previewCopy
                         );
                     }
                     res.bitmap.recycle();
                 }
                 zos.finish();
             }
+
+            if (gifEncoder != null) {
+                gifEncoder.finish();
+                gifEncoder = null;
+            }
         } finally {
+            if (gifEncoder != null) {
+                try {
+                    gifEncoder.close();
+                } catch (Throwable ignored) {
+                }
+            }
             releaseSilently(videoRetriever);
             if (gifCanvasBitmap != null && !gifCanvasBitmap.isRecycled()) {
                 gifCanvasBitmap.recycle();
             }
         }
 
-        if (finalZip.exists()) {
-            finalZip.delete();
-        }
+        if (finalGif.exists()) finalGif.delete();
+        tempGif.renameTo(finalGif);
+
+        if (finalZip.exists()) finalZip.delete();
         tempZip.renameTo(finalZip);
 
         if (listener != null) {
@@ -343,45 +366,41 @@ public final class MediaProcessor {
         }
 
         return new RenderedOutput(
+                finalGif,
+                "image/gif",
                 finalZip,
                 "application/zip",
                 true,
                 null,
-                firstAsciiText,
-                previewDir,
                 totalFrames
         );
     }
 
     /**
-     * Loads a rendered preview frame from disk for smooth 16 FPS playback.
+     * Saves the rendered visual file (.png or 16 FPS .gif) to the Android Gallery (Pictures/ASCIIWallpaper).
      */
-    public Bitmap loadPreviewFrame(RenderedOutput output, int frameNumOneBased) {
-        if (output == null || output.previewFramesDir == null) return null;
-        File f = new File(output.previewFramesDir, "frame_" + frameNumOneBased + ".jpg");
-        if (!f.exists()) return null;
-        BitmapFactory.Options opts = new BitmapFactory.Options();
-        opts.inPreferredConfig = Bitmap.Config.ARGB_8888;
-        return BitmapFactory.decodeFile(f.getAbsolutePath(), opts);
+    public Uri saveToGallery(RenderedOutput output) throws IOException {
+        if (output == null || output.galleryFile == null || !output.galleryFile.exists()) {
+            throw new IOException("No rendered gallery output available");
+        }
+        String ext = output.isAnimated ? ".gif" : ".png";
+        String prefix = output.isAnimated ? "ASCII_Wallpaper_16FPS_" : "ASCII_Wallpaper_";
+        String displayName = prefix + System.currentTimeMillis() + ext;
+        return saveMediaFileToGallery(output.galleryFile, displayName, output.galleryMime);
     }
 
     /**
-     * Saves the rendered output when the user taps "Save to gallery":
-     * - For Static Image: saves the PNG image to Gallery (Pictures/ASCIIWallpaper)
-     * - For Video / Animated GIF: saves the ZIP archive (containing 1.txt, 2.txt, ...) to Downloads/ASCIIWallpaper
+     * Saves the rendered text output (.txt for image, or .zip containing 1.txt, 2.txt... for video)
+     * to Downloads/ASCIIWallpaper.
      */
-    public String saveRenderedOutput(RenderedOutput output) throws IOException {
-        if (output == null || output.outputFile == null || !output.outputFile.exists()) {
-            throw new IOException("No rendered output available");
+    public String saveTextOrZip(RenderedOutput output) throws IOException {
+        if (output == null || output.textOrZipFile == null || !output.textOrZipFile.exists()) {
+            throw new IOException("No rendered text/ZIP output available");
         }
-        if (!output.isAnimated) {
-            String displayName = "ASCII_Wallpaper_" + System.currentTimeMillis() + ".png";
-            Uri uri = saveImageToGallery(output.outputFile, displayName, "image/png");
-            return uri.toString();
-        } else {
-            String displayName = "ASCII_Frames_" + System.currentTimeMillis() + ".zip";
-            return saveZipToDownloads(output.outputFile, displayName);
-        }
+        String ext = output.isAnimated ? ".zip" : ".txt";
+        String prefix = output.isAnimated ? "ASCII_Frames_" : "ASCII_Text_";
+        String displayName = prefix + System.currentTimeMillis() + ext;
+        return saveFileToDownloads(output.textOrZipFile, displayName, output.textOrZipMime);
     }
 
     private Bitmap extractFrameBitmap(
@@ -460,7 +479,7 @@ public final class MediaProcessor {
         return sw;
     }
 
-    private Uri saveImageToGallery(File srcFile, String displayName, String mimeType) throws IOException {
+    private Uri saveMediaFileToGallery(File srcFile, String displayName, String mimeType) throws IOException {
         ContentResolver resolver = context.getContentResolver();
         ContentValues values = new ContentValues();
         values.put(MediaStore.Images.Media.DISPLAY_NAME, displayName);
@@ -499,24 +518,24 @@ public final class MediaProcessor {
         return itemUri;
     }
 
-    private String saveZipToDownloads(File srcZipFile, String displayName) throws IOException {
+    private String saveFileToDownloads(File srcFile, String displayName, String mimeType) throws IOException {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             ContentResolver resolver = context.getContentResolver();
             ContentValues values = new ContentValues();
             values.put(MediaStore.Downloads.DISPLAY_NAME, displayName);
-            values.put(MediaStore.Downloads.MIME_TYPE, "application/zip");
+            values.put(MediaStore.Downloads.MIME_TYPE, mimeType);
             values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/ASCIIWallpaper");
             values.put(MediaStore.Downloads.IS_PENDING, 1);
 
             Uri collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
             Uri itemUri = resolver.insert(collection, values);
             if (itemUri == null) {
-                throw new IOException("Failed to create Downloads entry for ZIP");
+                throw new IOException("Failed to create Downloads entry");
             }
 
-            try (InputStream in = new FileInputStream(srcZipFile);
+            try (InputStream in = new FileInputStream(srcFile);
                  OutputStream out = resolver.openOutputStream(itemUri)) {
-                if (out == null) throw new IOException("Failed to open ZIP stream");
+                if (out == null) throw new IOException("Failed to open Downloads stream");
                 byte[] buf = new byte[64 * 1024];
                 int len;
                 while ((len = in.read(buf)) != -1) {
@@ -536,7 +555,7 @@ public final class MediaProcessor {
                 targetDir.mkdirs();
             }
             File outFile = new File(targetDir, displayName);
-            try (InputStream in = new FileInputStream(srcZipFile);
+            try (InputStream in = new FileInputStream(srcFile);
                  OutputStream out = new FileOutputStream(outFile)) {
                 byte[] buf = new byte[64 * 1024];
                 int len;
@@ -546,19 +565,6 @@ public final class MediaProcessor {
                 out.flush();
             }
             return outFile.getAbsolutePath();
-        }
-    }
-
-    private static void clearDirectory(File dir) {
-        if (dir.exists()) {
-            File[] files = dir.listFiles();
-            if (files != null) {
-                for (File f : files) {
-                    f.delete();
-                }
-            }
-        } else {
-            dir.mkdirs();
         }
     }
 

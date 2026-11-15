@@ -6,4 +6,6 @@
     <string name="colored_text">Colored text</string>
     <string name="import_media">Import media</string>
     <string name="save_to_gallery">Save to gallery</string>
+    <string name="save_txt">Save TXT</string>
+    <string name="save_zip">Save ZIP</string>
 </resources>
