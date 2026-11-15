@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ASCII Wallpaper</string>
+    <string name="status_idle">Ready (0/0)</string>
+    <string name="density_format">Density: %1$d</string>
+    <string name="colored_text">Colored text</string>
+    <string name="import_media">Import media</string>
+    <string name="save_to_gallery">Save to gallery</string>
+</resources>
